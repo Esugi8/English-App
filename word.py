@@ -29,6 +29,14 @@ with st.sidebar:
     with st.form("generate_form", clear_on_submit=True):
         input_text = st.text_input("テキストを入力:")
         gen_submit = st.form_submit_button("生成")
+        
+    st.divider()
+    st.subheader("🛠️ データ管理")
+    sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    if not sheet_url.startswith("http"):
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_url}/edit"
+    
+    st.link_button("📊 Googleスプレッドシートを開く", sheet_url)
 
     if gen_submit and input_text:
         with st.spinner("生成中..."):
