@@ -1,0 +1,6 @@
+
+# Python Virtual Environment 
+.venv/ 
+venv/ 
+.streamlit/
+__pycache__/ 
