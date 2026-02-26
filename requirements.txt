@@ -2,3 +2,4 @@ streamlit
 google-generativeai
 st-gsheets-connection
 pandas
+gTTS
