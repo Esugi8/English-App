@@ -5,6 +5,7 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 from gtts import gTTS
 import io
+import base64
 
 # --- 1. 初期設定 ---
 MODEL_NAME = 'gemini-flash-latest'
@@ -18,7 +19,7 @@ except Exception as e:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-st.set_page_config(page_title="AI英単語帳 (Full Version)", page_icon="🔊", layout="wide")
+st.set_page_config(page_title="AI英単語帳 (Mobile Audio Fix)", page_icon="🔊", layout="wide")
 st.title("📝 AI 英文法・単語帳")
 
 # セッション状態の初期化
@@ -26,17 +27,29 @@ if "editing_item" not in st.session_state:
     st.session_state.editing_item = None
 
 # --- 便利関数 ---
-def speak(text):
-    """Google TTSを使用して音声を生成"""
+
+def speak_and_play(text):
+    """音声をBase64形式で生成し、HTML5オーディオタグで即時再生する（スマホ対策）"""
+    if not text or pd.isna(text):
+        return
     try:
         tts = gTTS(text=str(text), lang='en', tld='com')
         fp = io.BytesIO()
         tts.write_to_fp(fp)
         fp.seek(0)
-        return fp
+        
+        # 音声データをBase64に変換
+        b64 = base64.b64encode(fp.read()).decode()
+        # HTML5オーディオタグを埋め込んで自動再生
+        # ※スマホブラウザの「ユーザー操作による再生」として認識させるため
+        audio_html = f"""
+            <audio autoplay="true">
+                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+            </audio>
+            """
+        st.markdown(audio_html, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"音声生成エラー: {e}")
-        return None
 
 def load_data():
     """スプレッドシートから最新データを読み込み"""
@@ -60,29 +73,9 @@ with st.sidebar:
     if gen_submit and input_text:
         with st.spinner("AIが最適な表現を構成中..."):
             if mode == "英語から生成":
-                prompt = f"""
-                英単語「{input_text}」について以下の情報をJSON形式で返してください。
-                {{
-                    "word": "{input_text}",
-                    "meaning": "代表的な日本語の意味",
-                    "phonetic": "発音記号(IPA)",
-                    "example_en": "自然な英語の例文",
-                    "example_ja": "例文の和訳",
-                    "synonyms": "類語(3つ程度)"
-                }}
-                """
+                prompt = f"""英単語「{input_text}」について以下の情報をJSON形式で返してください。{{"word": "{input_text}", "meaning": "意味", "phonetic": "発音記号(IPA)", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語(3つ)"}}"""
             else:
-                prompt = f"""
-                日本語「{input_text}」に最も適した英単語または英語フレーズを1つ選定し、それを元に以下のJSON形式で返してください。
-                {{
-                    "word": "選定した英単語",
-                    "meaning": "{input_text}",
-                    "phonetic": "選定した英単語の発音記号(IPA)",
-                    "example_en": "選定した英単語を使った例文",
-                    "example_ja": "例文の和訳",
-                    "synonyms": "選定した英単語に対する類語(3つ程度)"
-                }}
-                """
+                prompt = f"""日本語「{input_text}」に最適な英単語を1つ選びJSONで返してください。{{"word": "選定した英単語", "meaning": "{input_text}", "phonetic": "発音記号(IPA)", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語(3つ)"}}"""
             try:
                 response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
                 st.session_state.editing_item = json.loads(response.text)
@@ -106,42 +99,31 @@ if st.session_state.editing_item:
         ei = st.session_state.editing_item
         c1, c2, c3 = st.columns(3)
         with c1:
-            new_word = st.text_input("単語/熟語", value=to_str(ei.get('word','')), key="new_w")
+            new_word = st.text_input("単語", value=to_str(ei.get('word','')), key="new_w")
             new_phon = st.text_input("発音記号", value=to_str(ei.get('phonetic','')), key="new_p")
         with c2:
-            new_mean = st.text_input("意味 (日本語)", value=to_str(ei.get('meaning','')), key="new_m")
+            new_mean = st.text_input("意味", value=to_str(ei.get('meaning','')), key="new_m")
             new_syns = st.text_input("類語", value=to_str(ei.get('synonyms','')), key="new_s")
         with c3:
             new_ex_e = st.text_area("例文 (EN)", value=to_str(ei.get('example_en','')), key="new_ee")
             new_ex_j = st.text_area("例文 (JA)", value=to_str(ei.get('example_ja','')), key="new_ej")
         
-        col_btn1, col_btn2 = st.columns([1, 5])
-        with col_btn1:
-            if st.button("✅ 保存", type="primary", key="save_new"):
-                df = load_data()
-                new_row = pd.DataFrame([{
-                    "word": new_word, "meaning": new_mean, "phonetic": new_phon,
-                    "example_en": new_ex_e, "example_ja": new_ex_j, "synonyms": new_syns
-                }])
-                conn.update(data=pd.concat([df, new_row], ignore_index=True))
-                st.session_state.editing_item = None
-                st.success("保存しました！")
-                st.rerun()
-        with col_btn2:
-            if st.button("❌ 破棄", key="cancel_new"):
-                st.session_state.editing_item = None
-                st.rerun()
+        if st.button("✅ 保存", type="primary"):
+            df = load_data()
+            new_row = pd.DataFrame([{"word": new_word, "meaning": new_mean, "phonetic": new_phon, "example_en": new_ex_e, "example_ja": new_ex_j, "synonyms": new_syns}])
+            conn.update(data=pd.concat([df, new_row], ignore_index=True))
+            st.session_state.editing_item = None
+            st.success("保存しました！")
+            st.rerun()
 
 # --- 4. 既存単語の修正・AI再生成エリア ---
 st.divider()
 with st.expander("📝 登録済みの単語を修正・AIで情報を補完する"):
     current_df = load_data()
     if not current_df.empty:
-        # 単語選択
         target_word = st.selectbox("修正したい単語を選択", current_df['word'].tolist(), key="select_edit_target")
         row_data = current_df[current_df['word'] == target_word].iloc[0]
 
-        # セッション状態の初期化
         if "last_target" not in st.session_state or st.session_state.last_target != target_word:
             st.session_state["m_edit"] = to_str(row_data.get('meaning', ''))
             st.session_state["p_edit"] = to_str(row_data.get('phonetic', ''))
@@ -150,24 +132,19 @@ with st.expander("📝 登録済みの単語を修正・AIで情報を補完す�
             st.session_state["j_edit"] = to_str(row_data.get('example_ja', ''))
             st.session_state.last_target = target_word
 
-        # AI再生成ロジック（Widgetより前に配置）
-        if st.button("✨ この単語の情報をAIで再生成", key="regen_btn"):
-            with st.spinner("AIが再考中..."):
-                prompt = f"""
-                英単語「{target_word}」の最新情報を以下のJSON形式で返してください。
-                {{"meaning": "意味", "phonetic": "発音記号(IPA)", "example_en": "例文", "example_ja": "和訳", "synonyms": "類語(3つ)"}}
-                """
+        if st.button("✨ この単語の情報をAIで再生成"):
+            with st.spinner("AIが再生成中..."):
+                prompt = f"""英単語「{target_word}」の情報をJSON形式で返してください。{{"meaning": "意味", "phonetic": "発音記号", "example_en": "例文", "example_ja": "和訳", "synonyms": "類語"}}"""
                 try:
                     res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
                     new_info = json.loads(res.text)
-                    st.session_state["m_edit"] = to_str(new_info.get('meaning', ''))
-                    st.session_state["p_edit"] = to_str(new_info.get('phonetic', ''))
-                    st.session_state["s_edit"] = to_str(new_info.get('synonyms', ''))
-                    st.session_state["e_edit"] = to_str(new_info.get('example_en', ''))
-                    st.session_state["j_edit"] = to_str(new_info.get('example_ja', ''))
+                    st.session_state["m_edit"] = to_str(new_info.get('meaning'))
+                    st.session_state["p_edit"] = to_str(new_info.get('phonetic'))
+                    st.session_state["s_edit"] = to_str(new_info.get('synonyms'))
+                    st.session_state["e_edit"] = to_str(new_info.get('example_en'))
+                    st.session_state["j_edit"] = to_str(new_info.get('example_ja'))
                     st.rerun()
-                except Exception as e:
-                    st.error(f"再生成失敗: {e}")
+                except Exception as e: st.error(f"失敗: {e}")
 
         st.write("---")
         col1, col2 = st.columns(2)
@@ -179,7 +156,7 @@ with st.expander("📝 登録済みの単語を修正・AIで情報を補完す�
             st.text_area("例文 (EN)", key="e_edit")
             st.text_area("例文 (JA)", key="j_edit")
 
-        if st.button("💾 この内容で更新保存", key="update_save_btn"):
+        if st.button("💾 更新保存"):
             full_df = load_data()
             idx = full_df[full_df['word'] == target_word].index[0]
             full_df.at[idx, 'meaning'] = st.session_state["m_edit"]
@@ -188,7 +165,7 @@ with st.expander("📝 登録済みの単語を修正・AIで情報を補完す�
             full_df.at[idx, 'example_en'] = st.session_state["e_edit"]
             full_df.at[idx, 'example_ja'] = st.session_state["j_edit"]
             conn.update(data=full_df)
-            st.success("更新しました！")
+            st.success("更新完了！")
             st.rerun()
 
 # --- 5. 一覧表示（復習エリア） ---
@@ -201,32 +178,26 @@ with c_toggle:
 
 df_list = load_data()
 if not df_list.empty:
-    search = st.text_input("🔍 検索（単語・意味）", "")
+    search = st.text_input("🔍 検索", "")
     for i in range(len(df_list)-1, -1, -1):
         row = df_list.iloc[i]
         if pd.isna(row.get('word')): continue
-        if search.lower() not in str(row['word']).lower() and search not in str(row.get('meaning','')):
-            continue
+        if search.lower() not in str(row['word']).lower() and search not in str(row.get('meaning','')): continue
             
         with st.expander(f"🔤 {row['word']}"):
-            p_text = to_str(row.get('phonetic', '---'))
             col_ph, col_au = st.columns([3, 1])
-            with col_ph:
-                st.write(f"**発音記号:** {p_text}")
+            with col_ph: st.write(f"**発音記号:** {to_str(row.get('phonetic', '---'))}")
             with col_au:
                 if st.button("🔊 再生", key=f"au_w_{i}"):
-                    st.audio(speak(row['word']), format='audio/mp3', autoplay=True)
+                    speak_and_play(row['word'])
 
             if show_all or st.checkbox("意味・類語を表示", key=f"chk_m_{i}"):
                 st.write(f"**意味:** {row.get('meaning','')}")
-                syn = to_str(row.get('synonyms',''))
-                if syn: st.write(f"**類語:** {syn}")
+                if to_str(row.get('synonyms')): st.write(f"**類語:** {row['synonyms']}")
             
             st.info(f"**Example:** {to_str(row.get('example_en', ''))}")
             if st.button("🔊 例文再生", key=f"au_ex_{i}"):
-                st.audio(speak(row.get('example_en', '')), format='audio/mp3', autoplay=True)
+                speak_and_play(row.get('example_en', ''))
 
             if show_all or st.checkbox("例文の訳を表示", key=f"chk_ex_{i}"):
                 st.write(f"**訳:** {to_str(row.get('example_ja', ''))}")
-else:
-    st.info("単語が登録されていません。")
