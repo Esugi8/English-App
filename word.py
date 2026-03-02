@@ -8,7 +8,7 @@ import io
 import base64
 
 # --- 1. 初期設定 ---
-MODEL_NAME = 'gemini-flash-latest'
+MODEL_NAME = 'gemini-2.0-flash'
 
 # API・接続設定
 try:
@@ -53,7 +53,7 @@ def speak_and_play(text):
 
 def load_data():
     """スプレッドシートから最新データを読み込み"""
-    return conn.read(ttl=0)
+    return conn.read(ttl=20)
 
 def to_str(val):
     """AIの返り値を安全に文字列に変換"""
