@@ -8,7 +8,7 @@ import io
 import base64
 
 # --- 1. 初期設定 ---
-MODEL_NAME = 'gemini-1.5-flash-8b' 
+MODEL_NAME = 'gemini-2.5-flash-lite' 
 
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
