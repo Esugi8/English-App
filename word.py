@@ -8,7 +8,7 @@ import io
 import base64
 
 # --- 1. 初期設定 ---
-MODEL_NAME = 'gemini-2.5-flash-lite'
+MODEL_NAME = 'gemini-1.5-flash-8b' 
 
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
@@ -18,16 +18,72 @@ except Exception as e:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-st.set_page_config(page_title="AI英単語帳", page_icon="🔊", layout="wide")
-st.title("📝 AI 英文法・単語帳")
+st.set_page_config(page_title="AI英単語帳 Pro", page_icon="📝", layout="wide")
 
-if "editing_item" not in st.session_state:
-    st.session_state.editing_item = None
+# --- カスタムCSS（巨大チェックボックス ＆ 余白極小化） ---
+st.markdown("""
+<style>
+    /* 全体の行間を詰める */
+    .stVerticalBlock { gap: 0rem !important; }
+    
+    /* カードコンテナのパディング */
+    [data-testid="stVerticalBlockBorderWrapper"] > div {
+        padding: 0.1rem 0.5rem !important;
+        margin-bottom: 0.1rem !important;
+    }
+
+    /* 1. チェックボックス（トグル）を巨大化 */
+    [data-testid="stCheckbox"] {
+        transform: scale(1.8); /* 1.8倍に拡大 */
+        transform-origin: left center;
+        margin-left: 5px !important;
+    }
+
+    /* 2. 単語タイトルのスタイル */
+    .word-title {
+        font-size: 1.8rem !important;
+        font-weight: bold;
+        margin: 0 !important;
+        margin-left: -1rem !important; /* チェックボックスとの距離 */
+        line-height: 1.1;
+    }
+
+    /* 3. 例文（青い箱）を単語に極限まで近づける */
+    .stAlert {
+        padding: 0.1rem 0.5rem !important;
+        margin-top: -15px !important; /* マイナス値で上に引き寄せ */
+        margin-bottom: 0px !important;
+        border: none !important;
+        background-color: rgba(28, 131, 225, 0.07) !important;
+    }
+    .stAlert p {
+        font-size: 1.3rem !important;
+        line-height: 1.2 !important;
+        margin: 0 !important;
+    }
+
+    /* ボタンのサイズ */
+    div.stButton > button {
+        padding: 0px 5px !important;
+        height: 2rem !important;
+        min-height: 2rem !important;
+        font-size: 1.0rem !important;
+    }
+
+    /* 詳細テキストのフォントサイズ */
+    .detail-text {
+        font-size: 1.1rem !important;
+        color: #444;
+        background: #f0f2f6;
+        padding: 8px;
+        border-radius: 4px;
+        margin-top: 0px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- 便利関数 ---
-
 def speak_and_play(text):
-    """スマホ対応の音声再生"""
     if not text or pd.isna(text): return
     try:
         tts = gTTS(text=str(text), lang='en', tld='com')
@@ -37,165 +93,127 @@ def speak_and_play(text):
         b64 = base64.b64encode(fp.read()).decode()
         audio_html = f'<audio autoplay="true"><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>'
         st.markdown(audio_html, unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"音声生成エラー: {e}")
+    except: pass
 
 def load_data():
-    return conn.read(ttl=0)
+    df = conn.read(ttl=0)
+    if 'status' not in df.columns: df['status'] = 'L'
+    return df
 
 def to_str(val):
     if isinstance(val, list): return ", ".join(map(str, val))
     return str(val) if pd.notna(val) else ""
 
-# --- 2. サイドバー（新規登録） ---
-with st.sidebar:
-    st.header("1. 新規登録")
-    mode = st.radio("入力モード:", ["英語から生成", "日本語から英訳"])
+# --- メインレイアウト ---
+st.title("📝 AI 英文法・単語帳 Pro")
+tab_review, tab_list, tab_add, tab_manage = st.tabs(["🔥 集中復習", "📇 全単語リスト", "➕ 新規登録", "🛠️ 管理"])
+
+# --- TAB 1: 集中復習 ---
+with tab_review:
+    df_all = load_data()
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        view_mode = st.radio("形式", ["英語メイン", "日本語メイン"], horizontal=True, key="v_mode")
+    with c2:
+        filter_status = st.checkbox("習得済みも含む", value=False)
+    with c3:
+        display_count = st.number_input("件数", min_value=1, max_value=200, value=20)
+
+    df_review = df_all.copy()
+    if not filter_status: df_review = df_review[df_review['status'] != 'M']
     
-    with st.form("generate_form", clear_on_submit=True):
-        input_text = st.text_input("テキストを入力:")
-        gen_submit = st.form_submit_button("AIで下書きを生成")
+    search_rev = st.text_input("🔍 検索", key="search_rev")
+    if search_rev:
+        df_review = df_review[df_review['word'].str.contains(search_rev, case=False, na=False) | 
+                              df_review['meaning'].str.contains(search_rev, na=False)]
 
-    if gen_submit and input_text:
-        with st.spinner("AIが構成中..."):
-            prompt = f"""
-            「{input_text}」について以下のJSON形式のみで返してください。
-            {{"word": "{input_text if mode=='英語から生成' else '英訳'}", "meaning": "意味", "phonetic": "発音記号", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語"}}
-            """
-            try:
-                response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                st.session_state.editing_item = json.loads(response.text)
-            except Exception as e:
-                st.error(f"エラー: {e}")
-    
-    st.divider()
-    st.subheader("🛠️ データ管理")
-    try:
-        sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-        if not sheet_url.startswith("http"): sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_url}/edit"
-        st.link_button("📊 スプレッドシートを開く", sheet_url)
-    except: st.caption("URL未設定")
+    df_display = df_review.tail(display_count).iloc[::-1]
 
-# --- 3. 新規登録の確認エリア ---
-if st.session_state.editing_item:
-    st.subheader("2. 生成内容の確認・編集")
-    with st.container(border=True):
-        ei = st.session_state.editing_item
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            new_word = st.text_input("単語", value=to_str(ei.get('word','')), key="new_w")
-            new_phon = st.text_input("発音記号", value=to_str(ei.get('phonetic','')), key="new_p")
-        with c2:
-            new_mean = st.text_input("意味", value=to_str(ei.get('meaning','')), key="new_m")
-            new_syns = st.text_input("類語", value=to_str(ei.get('synonyms','')), key="new_s")
-        with c3:
-            new_ex_e = st.text_area("例文 (EN)", value=to_str(ei.get('example_en','')), key="new_ee")
-            new_ex_j = st.text_area("例文 (JA)", value=to_str(ei.get('example_ja','')), key="new_ej")
-        
-        b1, b2 = st.columns([1, 5])
-        with b1:
-            if st.button("✅ 保存", type="primary"):
-                df = load_data()
-                new_row = pd.DataFrame([{"word": new_word, "meaning": new_mean, "phonetic": new_phon, "example_en": new_ex_e, "example_ja": new_ex_j, "synonyms": new_syns}])
-                conn.update(data=pd.concat([df, new_row], ignore_index=True))
-                st.session_state.editing_item = None
-                st.success("保存完了！"); st.rerun()
-        with b2:
-            if st.button("❌ キャンセル"):
-                st.session_state.editing_item = None
-                st.rerun()
-
-# --- 4. 既存単語の修正エリア ---
-st.divider()
-with st.expander("📝 登録済みの単語を修正・AIで再生成"):
-    current_df = load_data()
-    if not current_df.empty:
-        target_word = st.selectbox("単語を選択", current_df['word'].tolist(), key="sel_edit")
-        row_data = current_df[current_df['word'] == target_word].iloc[0]
-
-        if "last_target" not in st.session_state or st.session_state.last_target != target_word:
-            st.session_state["m_edit"] = to_str(row_data.get('meaning', ''))
-            st.session_state["p_edit"] = to_str(row_data.get('phonetic', ''))
-            st.session_state["s_edit"] = to_str(row_data.get('synonyms', ''))
-            st.session_state["e_edit"] = to_str(row_data.get('example_en', ''))
-            st.session_state["j_edit"] = to_str(row_data.get('example_ja', ''))
-            st.session_state.last_target = target_word
-
-        if st.button("✨ AIで再生成"):
-            with st.spinner("生成中..."):
-                prompt = f"英単語「{target_word}」の情報をJSON形式で返してください。"
-                res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                new_info = json.loads(res.text)
-                st.session_state["m_edit"] = to_str(new_info.get('meaning')); st.session_state["p_edit"] = to_str(new_info.get('phonetic'))
-                st.session_state["s_edit"] = to_str(new_info.get('synonyms')); st.session_state["e_edit"] = to_str(new_info.get('example_en'))
-                st.session_state["j_edit"] = to_str(new_info.get('example_ja')); st.rerun()
-
-        st.write("---")
-        c_ed1, c_ed2 = st.columns(2)
-        with c_ed1:
-            st.text_input("意味", key="m_edit"); st.text_input("発音記号", key="p_edit"); st.text_input("類語", key="s_edit")
-        with c_ed2:
-            st.text_area("例文 (EN)", key="e_edit"); st.text_area("例文 (JA)", key="j_edit")
-
-        if st.button("💾 更新保存"):
-            full_df = load_data(); idx = full_df[full_df['word'] == target_word].index[0]
-            full_df.at[idx, 'meaning'] = st.session_state["m_edit"]; full_df.at[idx, 'phonetic'] = st.session_state["p_edit"]
-            full_df.at[idx, 'synonyms'] = st.session_state["s_edit"]; full_df.at[idx, 'example_en'] = st.session_state["e_edit"]
-            full_df.at[idx, 'example_ja'] = st.session_state["j_edit"]
-            conn.update(data=full_df); st.success("更新！"); st.rerun()
-
-# --- 5. 一覧表示（復習エリア） ---
-st.divider()
-st.subheader("📚 登録済みリスト")
-
-# クイズ設定
-display_mode = st.radio("クイズ形式:", ["英語メイン (EN → JA)", "日本語メイン (JA → EN)"], horizontal=True)
-show_all_answers = st.toggle("すべての詳細を表示", value=False)
-
-df_list = load_data()
-if not df_list.empty:
-    search = st.text_input("🔍 検索", "")
-    for i in range(len(df_list)-1, -1, -1):
-        row = df_list.iloc[i]
+    for i, row in df_display.iterrows():
         word_val = to_str(row.get('word', ''))
         mean_val = to_str(row.get('meaning', ''))
         ex_en = to_str(row.get('example_en', ''))
         
-        if not word_val: continue
-        if search.lower() not in word_val.lower() and search not in mean_val: continue
-            
-        # --- カードの作成（各単語の外枠） ---
         with st.container(border=True):
-            # 1行目: 単語/意味 と 音声ボタン
-            header_col1, header_col2 = st.columns([5, 1])
-            with header_col1:
-                # 日本語メインモードでも、例文は英語の勉強として常に表示
-                if display_mode == "英語メイン (EN → JA)":
-                    st.markdown(f"### {word_val}")
-                else:
-                    st.markdown(f"### {mean_val}")
-            with header_col2:
-                if st.button("🔊", key=f"play_w_{i}", help="単語の発音"):
-                    speak_and_play(word_val)
-
-            # 2行目: 英語例文（エクスパンダーの外にあるので常に表示）
-            st.info(f"**Example:** {ex_en}")
+            # カラム比率調整
+            c_toggle, c_title, c_sp, c_ms = st.columns([0.6, 8, 0.7, 0.7])
+            with c_toggle:
+                show_detail = st.checkbox(" ", key=f"tgl_{i}", label_visibility="collapsed")
+            with c_title:
+                title_text = word_val if view_mode == "英語メイン" else mean_val
+                st.markdown(f'<p class="word-title">{"▼ " if show_detail else "▶ "} {title_text}</p>', unsafe_allow_html=True)
+            with c_sp:
+                if st.button("🔊", key=f"sp_{i}"): speak_and_play(word_val)
+            with c_ms:
+                if st.button("✅", key=f"ms_{i}"):
+                    df_all.at[i, 'status'] = 'M'
+                    conn.update(data=df_all)
+                    st.rerun()
             
-            # 3行目: エクスパンダー（ここを閉じても例文は見えたまま）
-            detail_label = "答え合わせ・詳細を表示"
-            with st.expander(detail_label, expanded=show_all_answers):
-                c_d1, c_d2 = st.columns([4, 1])
-                with c_d1:
-                    if display_mode == "英語メイン (EN → JA)":
-                        st.write(f"**意味:** {mean_val}")
-                    else:
-                        st.write(f"**英単語:** {word_val}")
-                    
-                    st.write(f"**発音記号:** {to_str(row.get('phonetic', '---'))}")
-                    if to_str(row.get('synonyms')): st.write(f"**類語:** {row['synonyms']}")
-                    st.write(f"**例文訳:** {to_str(row.get('example_ja', ''))}")
-                with c_d2:
-                    if st.button("🔊例文", key=f"play_ex_{i}", help="例文の読み上げ"):
-                        speak_and_play(ex_en)
-else:
-    st.info("データがありません。")
+            st.info(f"EX: {ex_en}")
+            
+            if show_detail:
+                st.markdown(f"""
+                <div class="detail-text">
+                    <b>意味:</b> {mean_val if view_mode=='英語メイン' else word_val}<br>
+                    <b>発音:</b> {to_str(row.get('phonetic',''))} / <b>類語:</b> {to_str(row.get('synonyms',''))}<br>
+                    <b>和訳:</b> {to_str(row.get('example_ja',''))}
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button("🔊 例文再生", key=f"spex_{i}"): speak_and_play(ex_en)
+
+# --- TAB 2: 全単語リスト ---
+with tab_list:
+    df_list_view = load_data()
+    st.subheader(f"📋 全登録単語（{len(df_list_view)}件）")
+    st.dataframe(df_list_view[['word', 'meaning', 'status', 'example_en', 'synonyms']], use_container_width=True, hide_index=True)
+
+# --- TAB 3: 新規登録 ---
+with tab_add:
+    if "editing_item" not in st.session_state: st.session_state.editing_item = None
+    c_in, c_m = st.columns([3, 1])
+    with c_m: mode = st.radio("モード", ["英語から生成", "日本語から英訳"], key="add_mode")
+    with c_in:
+        input_text = st.text_input("登録したい単語・フレーズ:")
+        if st.button("AI下書き作成", type="primary"):
+            with st.spinner("AI生成中..."):
+                if mode == "英語から生成":
+                    prompt = f"""「{input_text}」の情報をJSONで。{{"word": "{input_text}", "meaning": "日本語訳(説明不要)", "phonetic": "IPA", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語"}}"""
+                else:
+                    prompt = f"""日本語「{input_text}」に最適な英単語を選びJSONで。{{"word": "選定単語", "meaning": "{input_text}", "phonetic": "IPA", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語"}}"""
+                res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                st.session_state.editing_item = json.loads(res.text)
+
+    if st.session_state.editing_item:
+        ei = st.session_state.editing_item
+        col1, col2 = st.columns(2)
+        with col1:
+            nw, nm, np = st.text_input("単語", value=to_str(ei.get('word',''))), st.text_input("意味", value=to_str(ei.get('meaning',''))), st.text_input("発音", value=to_str(ei.get('phonetic','')))
+        with col2:
+            ns, nee, nej = st.text_input("類語", value=to_str(ei.get('synonyms',''))), st.text_area("例文(EN)", value=to_str(ei.get('example_en',''))), st.text_area("例文(JA)", value=to_str(ei.get('example_ja','')))
+        if st.button("✅ 保存"):
+            df = load_data()
+            new_row = pd.DataFrame([{"word": nw, "meaning": nm, "phonetic": np, "example_en": nee, "example_ja": nej, "synonyms": ns, "status": "L"}])
+            conn.update(data=pd.concat([df, new_row], ignore_index=True))
+            st.session_state.editing_item = None; st.rerun()
+
+# --- TAB 4: 管理 ---
+with tab_manage:
+    df_m = load_data()
+    if not df_m.empty:
+        target = st.selectbox("修正する単語を選択", df_m['word'].tolist())
+        row, idx = df_m[df_m['word'] == target].iloc[0], df_m[df_m['word'] == target].index[0]
+        c_m1, c_m2 = st.columns(2)
+        with c_m1:
+            m_w, m_m, m_p = st.text_input("単", value=to_str(row.get('word',''))), st.text_input("意", value=to_str(row.get('meaning',''))), st.text_input("発", value=to_str(row.get('phonetic','')))
+            m_s = st.selectbox("状", ["L", "M"], index=0 if row.get('status')=='L' else 1)
+        with c_m2:
+            m_sy, m_ee, m_ej = st.text_input("類", value=to_str(row.get('synonyms',''))), st.text_area("例E", value=to_str(row.get('example_en',''))), st.text_area("例J", value=to_str(row.get('example_ja','')))
+        if st.button("💾 更新"):
+            df_m.at[idx, 'word'], df_m.at[idx, 'meaning'], df_m.at[idx, 'phonetic'] = m_w, m_m, m_p
+            df_m.at[idx, 'status'], df_m.at[idx, 'synonyms'], df_m.at[idx, 'example_en'], df_m.at[idx, 'example_ja'] = m_s, m_sy, m_ee, m_ej
+            conn.update(data=df_m); st.rerun()
+    st.divider()
+    sheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    if not str(sheet_url).startswith("http"): sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_url}/edit"
+    st.link_button("📊 スプレッドシートを開く", sheet_url)
