@@ -175,3 +175,73 @@ with tab_study:
                     conn.update(data=df_all); st.rerun()
 
 # (以降のタブは変更なしのため省略。既存のコードをそのままお使いください)
+# --- TAB 2: 一覧 ---
+with tab_list:
+    df_l = load_data()
+    st.dataframe(df_l[['word', 'meaning', 'status', 'example_en']], use_container_width=True, hide_index=True)
+
+# --- TAB 3: 登録 ---
+with tab_add:
+    if "editing_item" not in st.session_state: st.session_state.editing_item = None
+    c_in, c_m = st.columns([3, 1])
+    with c_m: mode = st.radio("入力モード", ["英語から", "日本語から"], key="add_mode")
+    with c_in:
+        input_text = st.text_input("単語・フレーズを入力:")
+        if st.button("AI生成", type="primary"):
+            with st.spinner("生成中..."):
+                prompt = f"""
+                「{input_text}」の情報をJSON形式で返してください。
+                {{
+                    "word": "{input_text if mode=='英語から' else '英訳'}",
+                    "meaning": "意味",
+                    "phonetic": "IPA",
+                    "example_en": "英文",
+                    "example_ja": "和訳",
+                    "synonyms": "類語"
+                }}
+                """
+                try:
+                    res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                    st.session_state.editing_item = json.loads(res.text)
+                except: st.error("エラーが発生しました。")
+
+    if st.session_state.editing_item:
+        ei = st.session_state.editing_item
+        col1, col2 = st.columns(2)
+        with col1:
+            nw = st.text_input("単語", value=to_str(ei.get('word','')))
+            nm = st.text_input("意味", value=to_str(ei.get('meaning','')))
+            np = st.text_input("発音", value=to_str(ei.get('phonetic','')))
+        with col2:
+            ns = st.text_input("類語", value=to_str(ei.get('synonyms','')))
+            nee = st.text_area("例文(EN)", value=to_str(ei.get('example_en','')))
+            nej = st.text_area("例文(JA)", value=to_str(ei.get('example_ja','')))
+        b_save, b_can = st.columns([1, 5])
+        with b_save:
+            if st.button("保存"):
+                df_s = load_data()
+                nr = pd.DataFrame([{"word": nw, "meaning": nm, "phonetic": np, "example_en": nee, "example_ja": nej, "synonyms": ns, "status": "L"}])
+                conn.update(data=pd.concat([df_s, nr], ignore_index=True))
+                st.session_state.editing_item = None; st.rerun()
+        with b_can:
+            if st.button("キャンセル"):
+                st.session_state.editing_item = None; st.rerun()
+
+# --- TAB 4: 管理 ---
+with tab_manage:
+    df_m = load_data()
+    if not df_m.empty:
+        target = st.selectbox("修正する単語を選択", df_m['word'].tolist(), key="sb_edit")
+        row_m = df_m[df_m['word'] == target].iloc[0]; idx_m = df_m[df_m['word'] == target].index[0]
+        c_m1, c_m2 = st.columns(2)
+        with c_m1:
+            m_w = st.text_input("単語", value=to_str(row_m.get('word','')), key="mw")
+            m_m = st.text_input("意味", value=to_str(row_m.get('meaning','')), key="mm")
+            m_s = st.selectbox("状態", ["L", "M"], index=0 if row_m.get('status')=='L' else 1)
+        with c_m2:
+            m_ee = st.text_area("例文(EN)", value=to_str(row_m.get('example_en','')), key="mee")
+            m_ej = st.text_area("例文(JA)", value=to_str(row_m.get('example_ja','')), key="mej")
+        if st.button("更新"):
+            df_m.at[idx_m, 'word'] = m_w; df_m.at[idx_m, 'meaning'] = m_m
+            df_m.at[idx_m, 'status'] = m_s; df_m.at[idx_m, 'example_en'] = m_ee; df_m.at[idx_m, 'example_ja'] = m_ej
+            conn.update(data=df_m); st.success("更新しました"); st.rerun()
