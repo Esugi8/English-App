@@ -116,24 +116,45 @@ tab_study, tab_list, tab_add, tab_manage = st.tabs(["🔥 復習", "📇 一覧"
 # --- TAB 1: 復習 ---
 with tab_study:
     df_all = load_data()
-    c_s1, c_s2, c_s3 = st.columns([2, 1, 1])
+    
+    # 1. 設定エリア
+    c_s1, c_s2, c_s3, c_s4 = st.columns([2, 1, 1, 1])
     with c_s1: 
         view_mode = st.radio("形式", ["英語メイン", "日本語メイン"], horizontal=True)
-    with c_s2: 
-        filter_status = st.checkbox("習得済みも表示", value=False)
+    with c_s2:
+        # 並び順の選択
+        sort_order = st.selectbox("並び順", ["新しい順", "ランダム"])
     with c_s3: 
+        filter_status = st.checkbox("習得済みも表示", value=False)
+    with c_s4: 
         display_count = st.number_input("表示件数", min_value=1, value=20)
 
+    # 2. データの絞り込み
     df_review = df_all.copy()
-    if not filter_status: df_review = df_review[df_review['status'] != 'M']
+    if not filter_status: 
+        df_review = df_review[df_review['status'] != 'M']
     
     search = st.text_input("🔍 検索", key="search_rev")
     if search:
         df_review = df_review[df_review['word'].str.contains(search, case=False, na=False) | 
                               df_review['meaning'].str.contains(search, na=False)]
 
-    df_display = df_review.tail(display_count).iloc[::-1]
+    # 3. 表示データの決定（ランダム対応）
+    if sort_order == "ランダム":
+        # シャッフルボタン
+        if st.button("🔀 リストをシャッフル"):
+            st.session_state.shuffle_seed = st.session_state.get('shuffle_seed', 0) + 1
+        
+        # セッション状態を使って、操作のたびに中身が変わらないように固定してサンプリング
+        seed = st.session_state.get('shuffle_seed', 0)
+        df_display = df_review.sample(n=min(len(df_review), display_count), random_state=seed)
+    else:
+        # 通常の新しい順
+        df_display = df_review.tail(display_count).iloc[::-1]
 
+    # 4. リスト表示
+    st.caption(f"表示中: {len(df_display)}件")
+    
     for i, row in df_display.iterrows():
         word_val = to_str(row.get('word', ''))
         mean_val = to_str(row.get('meaning', ''))
@@ -141,16 +162,13 @@ with tab_study:
         
         with st.container(border=True):
             cols = st.columns([0.6, 7.5, 0.8, 0.8, 0.8])
-            
+            # (以下、コンテンツ表示部分は以前のコードと同じ)
             with cols[0]:
                 show_detail = st.checkbox(" ", key=f"tgl_{i}", label_visibility="collapsed")
-            
             with cols[1]:
                 display_text = word_val if view_mode == "英語メイン" else mean_val
                 st.markdown(f'<div class="word-badge">{display_text}</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="example-box"><b>EX:</b> {ex_en}</div>', unsafe_allow_html=True)
-                
-                # ★st.divider() を削除しました
                 if show_detail:
                     st.markdown(f"""
                     <div class="detail-area">
@@ -160,15 +178,10 @@ with tab_study:
                         <b>和訳:</b> {to_str(row.get('example_ja',''))}
                     </div>
                     """, unsafe_allow_html=True)
-
             with cols[2]:
-                if st.button("🔊", key=f"sp_{i}"):
-                    speak_and_play(word_val)
-            
+                if st.button("🔊", key=f"sp_{i}"): speak_and_play(word_val)
             with cols[3]:
-                if st.button("▶️", key=f"spex_{i}"):
-                    speak_and_play(ex_en)
-            
+                if st.button("▶️", key=f"spex_{i}"): speak_and_play(ex_en)
             with cols[4]:
                 if st.button("✅", key=f"ms_{i}"):
                     df_all.at[i, 'status'] = 'M'
