@@ -1,5 +1,5 @@
 import streamlit as st
-import google.generativeai as genai
+import google.genai as genai
 import json
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
@@ -9,12 +9,7 @@ import base64
 
 # --- 1. 初期設定 ---
 MODEL_NAME = 'gemini-3.1-flash-lite-preview' 
-
-try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel(MODEL_NAME)
-except Exception as e:
-    st.error(f"API設定エラー: {e}")
+client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -191,40 +186,46 @@ with tab_study:
 # --- TAB 2: 一覧 ---
 with tab_list:
     df_l = load_data()
-    st.dataframe(df_l[['word', 'meaning', 'status', 'example_en']], use_container_width=True, hide_index=True)
+    st.dataframe(df_l[['word', 'meaning', 'status', 'example_en']], width='stretch', hide_index=True)
 
-# --- TAB 3: 登録 ---
+# --- TAB 3: 登録 (ロジック最適化) ---
 with tab_add:
     if "editing_item" not in st.session_state: st.session_state.editing_item = None
     c_in, c_m = st.columns([3, 1])
-    with c_m: mode = st.radio("入力モード", ["英語から", "日本語から"], key="add_mode")
+    with c_m: mode = st.radio("入力モード", ["英語から生成", "日本語から英訳"], key="add_mode")
     with c_in:
         input_text = st.text_input("単語・フレーズを入力:")
         if st.button("AI生成", type="primary"):
-            with st.spinner("生成中..."):
-                prompt = f"""
-                「{input_text}」の情報をJSON形式で返してください。
-                {{
-                    "word": "{input_text if mode=='英語から' else '英訳'}",
-                    "meaning": "意味",
-                    "phonetic": "IPA",
-                    "example_en": "英文",
-                    "example_ja": "和訳",
-                    "synonyms": "類語"
-                }}
-                """
+            with st.spinner("AI生成中..."):
+                if mode == "英語から生成":
+                    # 英語入力：単語＝入力英語、意味＝AIが考えた日本語
+                    prompt = f"""
+                    Provide information about the English word "{input_text}" in JSON format. 
+                    The 'meaning' key should be the Japanese translation.
+                    {{ "word": "{input_text}", "meaning": "日本語訳", "phonetic": "IPA", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語" }}
+                    """
+                else:
+                    # 日本語入力：単語＝AIが選んだ英語、意味＝ユーザーが入力した日本語
+                    prompt = f"""
+                    Find the best English word for the Japanese "{input_text}". 
+                    Respond in JSON. Set the 'word' key to the English term and set 'meaning' key exactly to "{input_text}".
+                    {{ "word": "Best English Word", "meaning": "{input_text}", "phonetic": "IPA", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語" }}
+                    """
                 try:
-                    res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                    st.session_state.editing_item = json.loads(res.text)
-                except: st.error("エラーが発生しました。")
+                    res = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=prompt,
+                    config={'response_mime_type': 'application/json'}
+                    )
+                except: st.error("エラー。1分待ってください。")
 
     if st.session_state.editing_item:
         ei = st.session_state.editing_item
         col1, col2 = st.columns(2)
         with col1:
-            nw = st.text_input("単語", value=to_str(ei.get('word','')))
-            nm = st.text_input("意味", value=to_str(ei.get('meaning','')))
-            np = st.text_input("発音", value=to_str(ei.get('phonetic','')))
+            nw = st.text_input("登録単語 (English)", value=to_str(ei.get('word','')))
+            nm = st.text_input("登録意味 (Japanese)", value=to_str(ei.get('meaning','')))
+            np = st.text_input("発音記号", value=to_str(ei.get('phonetic','')))
         with col2:
             ns = st.text_input("類語", value=to_str(ei.get('synonyms','')))
             nee = st.text_area("例文(EN)", value=to_str(ei.get('example_en','')))
@@ -237,23 +238,35 @@ with tab_add:
                 conn.update(data=pd.concat([df_s, nr], ignore_index=True))
                 st.session_state.editing_item = None; st.rerun()
         with b_can:
-            if st.button("キャンセル"):
-                st.session_state.editing_item = None; st.rerun()
+            if st.button("キャンセル"): st.session_state.editing_item = None; st.rerun()
 
 # --- TAB 4: 管理 ---
 with tab_manage:
     df_m = load_data()
     if not df_m.empty:
         target = st.selectbox("修正する単語を選択", df_m['word'].tolist(), key="sb_edit")
-        row_m = df_m[df_m['word'] == target].iloc[0]; idx_m = df_m[df_m['word'] == target].index[0]
+        row_m = df_m[df_m['word'] == target].iloc[0]
+        idx_m = df_m[df_m['word'] == target].index[0]
+
+        # --- 選択単語が切り替わった場合のみ、入力欄の値を直接上書きする ---
+        if "last_manage_target" not in st.session_state or st.session_state.last_manage_target != target:
+            st.session_state["mw"] = to_str(row_m.get('word',''))
+            st.session_state["mm"] = to_str(row_m.get('meaning',''))
+            st.session_state["mee"] = to_str(row_m.get('example_en',''))
+            st.session_state["mej"] = to_str(row_m.get('example_ja',''))
+            st.session_state.last_manage_target = target
+        # -----------------------------------------------------------
+
         c_m1, c_m2 = st.columns(2)
         with c_m1:
-            m_w = st.text_input("単語", value=to_str(row_m.get('word','')), key="mw")
-            m_m = st.text_input("意味", value=to_str(row_m.get('meaning','')), key="mm")
+            # keyを指定しているため、上記で代入した値がそのまま表示されます
+            m_w = st.text_input("単語", key="mw")
+            m_m = st.text_input("意味", key="mm")
             m_s = st.selectbox("状態", ["L", "M"], index=0 if row_m.get('status')=='L' else 1)
         with c_m2:
-            m_ee = st.text_area("例文(EN)", value=to_str(row_m.get('example_en','')), key="mee")
-            m_ej = st.text_area("例文(JA)", value=to_str(row_m.get('example_ja','')), key="mej")
+            m_ee = st.text_area("例文(EN)", key="mee")
+            m_ej = st.text_area("例文(JA)", key="mej")
+            
         if st.button("更新"):
             df_m.at[idx_m, 'word'] = m_w; df_m.at[idx_m, 'meaning'] = m_m
             df_m.at[idx_m, 'status'] = m_s; df_m.at[idx_m, 'example_en'] = m_ee; df_m.at[idx_m, 'example_ja'] = m_ej
