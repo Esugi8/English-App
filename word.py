@@ -96,7 +96,7 @@ def speak_and_play(text):
     except: pass
 
 def load_data():
-    df = conn.read(ttl=100)
+    df = conn.read(ttl=180)
     if 'status' not in df.columns: df['status'] = 'L'
     return df
 
