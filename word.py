@@ -96,7 +96,7 @@ def speak_and_play(text):
     except: pass
 
 def load_data():
-    df = conn.read(ttl=0)
+    df = conn.read(ttl=100)
     if 'status' not in df.columns: df['status'] = 'L'
     return df
 
@@ -196,16 +196,14 @@ with tab_add:
     with c_in:
         input_text = st.text_input("単語・フレーズを入力:")
         if st.button("AI生成", type="primary"):
-            with st.spinner("AI生成中..."):
+            with st.spinner("生成中..."):
                 if mode == "英語から生成":
-                    # 英語入力：単語＝入力英語、意味＝AIが考えた日本語
                     prompt = f"""
                     Provide information about the English word "{input_text}" in JSON format. 
                     The 'meaning' key should be the Japanese translation.
                     {{ "word": "{input_text}", "meaning": "日本語訳", "phonetic": "IPA", "example_en": "英文", "example_ja": "和訳", "synonyms": "類語" }}
                     """
                 else:
-                    # 日本語入力：単語＝AIが選んだ英語、意味＝ユーザーが入力した日本語
                     prompt = f"""
                     Find the best English word for the Japanese "{input_text}". 
                     Respond in JSON. Set the 'word' key to the English term and set 'meaning' key exactly to "{input_text}".
@@ -213,11 +211,17 @@ with tab_add:
                     """
                 try:
                     res = client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=prompt,
-                    config={'response_mime_type': 'application/json'}
+                        model=MODEL_NAME,
+                        contents=prompt,
+                        config={'response_mime_type': 'application/json'}
                     )
-                except: st.error("エラー。1分待ってください。")
+                    # --- 追加箇所: 結果を保存して再描画 ---
+                    if res.text:
+                        st.session_state.editing_item = json.loads(res.text)
+                        st.rerun() 
+                    # ----------------------------------
+                except Exception as e: 
+                    st.error(f"エラーが発生しました: {e}")
 
     if st.session_state.editing_item:
         ei = st.session_state.editing_item
@@ -238,7 +242,8 @@ with tab_add:
                 conn.update(data=pd.concat([df_s, nr], ignore_index=True))
                 st.session_state.editing_item = None; st.rerun()
         with b_can:
-            if st.button("キャンセル"): st.session_state.editing_item = None; st.rerun()
+            if st.button("キャンセル"):
+                st.session_state.editing_item = None; st.rerun()
 
 # --- TAB 4: 管理 ---
 with tab_manage:
